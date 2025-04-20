@@ -1,0 +1,10 @@
+!pip install diffusers accelerate
+!pip install numpy pillow
+!pip install -q \ autodistill \ autodistill-grounded-sam \ autodistill-yolov8 \ roboflow \ supervision==0.24.0
+
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("gabrielalbertin/clothing-dataset")
+
+print("Path to dataset files:", path)
