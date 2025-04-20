@@ -1,4 +1,3 @@
-
 import torch
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -13,6 +12,7 @@ from autodistill_grounded_sam import GroundedSAM
 from autodistill.detection import CaptionOntology
 import tempfile
 import os
+import pandas as pd
 
 
 def generate_upper_lower_masks(image_path):
@@ -39,11 +39,8 @@ def generate_upper_lower_masks(image_path):
             elif label == "lower-body":
                 lower_mask[mask.astype(bool)] = 255
 
-    upper_mask_path = "upper_body_mask.jpg"
-    lower_mask_path = "lower_body_mask.jpg"
-    Image.fromarray(upper_mask).save(upper_mask_path)
-    Image.fromarray(lower_mask).save(lower_mask_path)
-    return upper_mask_path, lower_mask_path
+    # Return masks as NumPy arrays for inpainting
+    return upper_mask, lower_mask
 
 
 def load_inpainting_pipeline():
@@ -67,6 +64,20 @@ def load_inpainting_pipeline():
     return pipeline
 
 
+def find_similar_image(df, user_prompt):
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    combined_text = df['description'] + " " + df['occasion']
+    desc_embeddings = model.encode(combined_text, convert_to_tensor=True)
+    prompt_embedding = model.encode(user_prompt, convert_to_tensor=True)
+
+    cosine_scores = util.pytorch_cos_sim(prompt_embedding, desc_embeddings)[0]
+    top_results = cosine_scores.topk(1)
+
+    for score, idx in zip(top_results[0], top_results[1]):
+        print(f"Match: {df.iloc[idx.item()]['description']} (Score: {score:.4f})")
+        return df.iloc[idx.item()]['image_path']
+
+
 class GenerateOutfitAPIView(APIView):
     parser_classes = [MultiPartParser]
 
@@ -77,20 +88,29 @@ class GenerateOutfitAPIView(APIView):
         if not prompt or not image_file:
             return Response({'error': 'Missing prompt or image'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Save image temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_image:
             temp_image.write(image_file.read())
             temp_image_path = temp_image.name
 
+        # Generate masks
         upper_mask, lower_mask = generate_upper_lower_masks(temp_image_path)
 
+        # Load inpainting pipeline
         pipeline = load_inpainting_pipeline()
 
+        # Prepare image for inpainting
         input_image = load_image(temp_image_path).convert("RGB").resize((512, 512))
-        mask_image = Image.open(upper_mask).convert("L").resize((512, 512))
-        ip_image = input_image  # For demo; ideally use a matching shirt
+        mask_image = Image.fromarray(upper_mask).convert("L").resize((512, 512))
+        
+        # Read dataset for finding similar image
+        df = pd.read_csv("dataset6.csv")
+        ip_image_path = find_similar_image(df, prompt)
+        ip_image = load_image(ip_image_path).convert("RGB").resize((512, 512))
 
+        # Run inpainting
         result = pipeline(
-            prompt=prompt,
+            prompt="a man perfect body ,realistic skin, natural skin,remove shirt",
             negative_prompt="ugly, bad quality, bad anatomy",
             image=input_image,
             mask_image=mask_image,
@@ -100,6 +120,7 @@ class GenerateOutfitAPIView(APIView):
             num_inference_steps=120,
         ).images[0]
 
+        # Save and return result as a response
         result_path = os.path.join(tempfile.gettempdir(), "output.jpg")
         result.save(result_path)
 
